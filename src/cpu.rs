@@ -21,6 +21,7 @@ pub struct CPU {
     regs: [u8; 16], // General purpose registers
     pub vbuf: [u8; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8], // Video buffer,
     rng: ThreadRng,
+    debug: bool,
 }
 
 const _FONT_SET: [[u8; 5]; 16] = [
@@ -53,15 +54,16 @@ impl Default for CPU {
             st: 0,
             stack: Vec::new(),
             regs: [0; 16],
-            vbuf: [0x00; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8],
+            vbuf: [0xAA; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8],
             rng : rand::thread_rng(),
+            debug: false,
         }
         // Preload sprites to 0x0000 - 0x01ff
     }
 }
 
 impl CPU {
-    pub fn new() -> CPU {
+    pub fn new(debug: bool) -> CPU {
         CPU {
             ram: [0; 4096],
             pc: PROGRAM_START as u16,
@@ -71,8 +73,9 @@ impl CPU {
             st: 0,
             stack: Vec::new(),
             regs: [0; 16],
-            vbuf: [0x00; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8],
+            vbuf: [0xAA; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8],
             rng : rand::thread_rng(),
+            debug,
         }
         // Preload sprites to 0x0000 - 0x01ff
     }
@@ -92,6 +95,9 @@ impl CPU {
     }
 
     fn goto(&mut self, address: u16) {
+        if self.debug {
+           println!("GOTO: {:x}", address);
+        }
         self.pc = address;
     }
 
@@ -131,7 +137,6 @@ impl CPU {
 
 
     fn setreg(&mut self, reg: u8, value: u8) {
-        println!("reg: {}, value: {}", reg, value);
         self.regs[reg as usize] = value;
     }
 
@@ -193,7 +198,6 @@ impl CPU {
     }
 
     fn seti(&mut self, address: u16) {
-        println!("Set I to {}", address);
         self.ir = address;
     }
 
@@ -210,10 +214,15 @@ impl CPU {
         let x_px = self.regs[reg1 as usize]; // starting pixel x
         let y_px = self.regs[reg2 as usize]; // starting pixel y
 
+        // Wrap
+        let x_px = x_px % DISPLAY_WIDTH as u8;
+        let y_px = y_px % DISPLAY_HEIGHT as u8;
+
         let vbuf_x:usize = (x_px / 8) as usize; // vbuf x element. vbuf y is same a pixel y
         let offset_x = x_px % 8;
 
         if vbuf_x >= DISPLAY_WIDTH {
+            // Shound never happen
             return;
         }
 
@@ -227,9 +236,8 @@ impl CPU {
             let sprite = self.ram[self.ir as usize + line as usize];
 
             // First element
-            let element = vbuf_x + DISPLAY_WIDTH / 8 * (y_px / 8 + line) as usize;
+            let element = vbuf_x + DISPLAY_WIDTH / 8 * (y_px + line) as usize;
 
-            println!("x_px: {}, y_px: {}, vbuf_x: {}, offset_x: {}, line: {}, element: {}, sprite: {:08b}", x_px, y_px, vbuf_x, offset_x, line, element, sprite);
 
             let x = self.vbuf[element];
             let bits1= x ^ sprite >> offset_x;
@@ -252,7 +260,9 @@ impl CPU {
                 }
             }
         }
-        self.print_vbuf();
+        if self.debug {
+            self.print_vbuf();
+        }
     }
 
     // Skip if key is pressed with value in register
@@ -320,6 +330,10 @@ impl CPU {
 
 
     fn fetch(&mut self) -> u16 {
+        // Addressing out of bounds
+        if self.pc as usize + 2 >= self.ram.len() {
+            panic!("PC out of bounds");
+        }
         let high: u16  = (self.ram[self.pc as usize] as u16) << 8;
         let low: u16 = self.ram[self.pc as usize + 1] as u16;
         self.pc = self.pc + 2;
@@ -358,7 +372,7 @@ impl CPU {
             0xA000 => self.seti(ins & 0x0fff),
             0xB000 => self.gotoreg(ins & 0x0fff),
             0xC000 => self.rand((ins >> 8 & 0xf) as u8, ins & 0x00ff),
-            0xD000 => self.draw((ins >> 8 & 0xf) as u8, (ins >> 4 & 0x00f0) as u8, (ins & 0x000f) as u8),
+            0xD000 => self.draw((ins >> 8 & 0xf) as u8, (ins >> 4 & 0xf) as u8, (ins & 0x000f) as u8),
             0xE000 => match ins & 0x00ff {
                 0x9E => self.skp((ins & 0xf00 >> 8) as u8),
                 0xA1 => self.sknp((ins & 0xf00 >> 8) as u8),
@@ -381,14 +395,24 @@ impl CPU {
         }
     }
 
+    pub fn next_cycle(&mut self) -> i32 {
+        let instruction = self.fetch();
+        self.exec(instruction);
+        if self.pc >= 4095 {
+            return -1;
+        }
+        return 0;
+    }
+
     pub fn run(&mut self) -> i32 {
         loop {
             let instruction = self.fetch();
             // Print current pc and instruction
-            println!("PC: {:04X} INS: {:04X}", self.pc - 2, instruction);
+            if self.debug {
+                println!("PC: {:04X} INS: {:04X}", self.pc - 2, instruction);
+            }
             self.exec(instruction);
             if self.pc >= 4095 {
-                println!("Last instruction");
                 return -1;
             }
         }
@@ -423,9 +447,8 @@ impl CPU {
 
     pub fn read_vbuf(&self, x: u8, y: u8) -> bool {
         let vbuf_x: usize = (x / 8) as usize;
-        let vbuf_y: usize = (y / 8) as usize;
         let offset_x = x % 8;
-        let element = vbuf_x + DISPLAY_WIDTH / 8 * vbuf_y;
+        let element = vbuf_x + DISPLAY_WIDTH / 8 * y as usize;
         let b = self.vbuf[element];
         return b & (0x80 >> offset_x) != 0;
         // let vbuf_x: usize = (x / 8) as usize;
@@ -443,7 +466,7 @@ impl CPU {
             let s = self.render_sprite_line(sprite);
             print!("{}", s);
         }
-        println!("")
+        print!("");
     }
 
     pub fn print_memory(&mut self) {

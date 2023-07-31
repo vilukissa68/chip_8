@@ -7,12 +7,10 @@ use std::{
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
-    buffer::Buffer,
-    style::{Color, Style},
-    text::Span,
+    style::{Color, Style, Modifier},
     widgets::{
         canvas::{Canvas, Map, MapResolution, Rectangle, Context, Painter},
-        Block, Borders, Row, Table, Cell
+        Block, Borders, Row, Table, Cell, TableState
     },
     Frame, Terminal, symbols,
 };
@@ -23,31 +21,38 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use resize::{Pixel::RGB8, px::RGB};
-use resize::Type::Point;
 
 struct Tui {
     cpu: CPU,
     width: u8,
     height: u8,
     keys: [bool; 16],
+    executing: bool,
+    register_table_state: TableState,
 }
 
 impl Tui {
-    fn new() -> Tui {
+    fn new(debug: bool) -> Tui {
         Tui {
-            cpu: CPU::new(),
+            cpu: CPU::new(debug),
             width: 64,
             height: 32,
             keys: [false; 16],
+            executing: false,
+            register_table_state: TableState::default(),
         }
     }
 
     fn on_tick(&mut self) {
-        return
+        if self.executing {
+            if self.cpu.next_cycle() == -1 {
+                self.executing = false; // Program ended
+            }
+        }
     }
 }
 
-pub fn tui_start() -> Result<(), Box<dyn Error>> {
+pub fn tui_start(binary: Vec<u8>, debug: bool) -> Result<(), Box<dyn Error>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -55,8 +60,10 @@ pub fn tui_start() -> Result<(), Box<dyn Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     // create app and run it
-    let tick_rate = Duration::from_millis(50);
-    let tui = Tui::new();
+    let tick_rate = Duration::from_millis(250);
+    let mut tui = Tui::new(debug);
+    tui.cpu.load_bin(binary, false);
+    tui.executing = true;
     let res = run_tui(&mut terminal, tui, tick_rate);
 
     // restore terminal
@@ -83,7 +90,7 @@ fn run_tui<B: Backend>(
 ) -> io::Result<()> {
     let mut last_tick = Instant::now();
     loop {
-        terminal.draw(|f| ui(f, &tui))?;
+        terminal.draw(|f| ui(f, &mut tui))?;
 
         let timeout = tick_rate
             .checked_sub(last_tick.elapsed())
@@ -107,27 +114,52 @@ fn run_tui<B: Backend>(
     }
 }
 
-fn ui<B: Backend>(f: &mut Frame<B>, tui: &Tui) {
+fn register_view(registers: Vec<u8>) -> Table<'static> {
+    let selected_style = Style::default().add_modifier(Modifier::REVERSED);
+    let normal_style = Style::default().bg(Color::Blue);
+    let header_cells = ["Register", "Value"]
+        .iter()
+        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Red)));
+    let header = Row::new(header_cells)
+        .style(normal_style)
+        .height(1)
+        .bottom_margin(1);
+
+    let rows = registers.into_iter().enumerate().map(|(idx, reg)| {
+        let height = 1;
+        let cells = [Cell::from(format!("V{:X}",idx)), Cell::from(format!("{:X}", reg))];
+        Row::new(cells).height(height as u16).bottom_margin(1)
+    });
+
+    let t = Table::new(rows)
+        .header(header)
+        .block(Block::default().borders(Borders::ALL).title("Table"))
+        .highlight_style(selected_style)
+        .highlight_symbol(">> ")
+        .widths(&[
+            Constraint::Percentage(10),
+            Constraint::Length(30),
+            Constraint::Min(10),
+        ]);
+
+    return t;
+}
+
+fn ui<B: Backend>(f: &mut Frame<B>, tui: &mut Tui) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
         .split(f.size());
-    let canvas = Canvas::default()
-        .block(Block::default().borders(Borders::ALL).title("World"))
-        .paint(|ctx| {
-            ctx.draw(&Map {
-                color: Color::White,
-                resolution: MapResolution::High,
-            });
-            ctx.print(
-                0.0,
-                0.0,
-                Span::styled("You are here", Style::default().fg(Color::Yellow)),
-            );
-        })
-        .x_bounds([-180.0, 180.0])
-        .y_bounds([-90.0, 90.0]);
-    f.render_widget(canvas, chunks[0]);
+
+    let data_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+        .split(chunks[0]);
+
+    // Registers
+    let register_view = register_view(tui.cpu.get_registers().to_vec());
+    f.render_stateful_widget(register_view, data_chunks[0], &mut tui.register_table_state);
+
 
     // Map cpu vbuf to canvas
     let mut pixels = Vec::new();
@@ -180,7 +212,7 @@ impl tui::widgets::Widget for FrameBuffer<'_> {
             area.width as usize,
             area.height as usize,
             RGB8,
-            Point,
+            resize::Type::Point,
         ).unwrap();
 
         let mut dst = vec![RGB::new(0, 0, 0); (area.width * area.height) as usize];
@@ -189,7 +221,7 @@ impl tui::widgets::Widget for FrameBuffer<'_> {
         let mut fb = Vec::new();
         for j in 0..32 {
              for i in 0..64 {
-                 if *self.pixels[i as usize + j * 32 as usize] {
+                 if *self.pixels[i as usize + j * 64 as usize] {
                      fb.push(RGB::new(255, 255, 255));
                  } else {
                      fb.push(RGB::new(0, 0, 0));
