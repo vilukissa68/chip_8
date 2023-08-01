@@ -29,6 +29,7 @@ struct Tui {
     keys: [bool; 16],
     executing: bool,
     register_table_state: TableState,
+    memory_table_state: TableState,
 }
 
 impl Tui {
@@ -40,6 +41,7 @@ impl Tui {
             keys: [false; 16],
             executing: false,
             register_table_state: TableState::default(),
+            memory_table_state: TableState::default(),
         }
     }
 
@@ -49,6 +51,61 @@ impl Tui {
                 self.executing = false; // Program ended
             }
         }
+    }
+    pub fn next_register(&mut self) {
+        let i = match self.register_table_state.selected() {
+            Some(i) => {
+                if i >= self.cpu.get_registers().len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.register_table_state.select(Some(i));
+    }
+
+    pub fn prev_register(&mut self) {
+        let i = match self.register_table_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.cpu.get_registers().len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.register_table_state.select(Some(i));
+    }
+
+    pub fn next_memory(&mut self) {
+        let i = match self.memory_table_state.selected() {
+            Some(i) => {
+                if i >= self.cpu.get_memory().len() - 1 {
+                    0
+                } else {
+                    i + 1
+                }
+            }
+            None => 0,
+        };
+        self.memory_table_state.select(Some(i));
+    }
+
+    pub fn prev_memory(&mut self) {
+        let i = match self.memory_table_state.selected() {
+            Some(i) => {
+                if i == 0 {
+                    self.cpu.get_memory().len() - 1
+                } else {
+                    i - 1
+                }
+            }
+            None => 0,
+        };
+        self.memory_table_state.select(Some(i));
     }
 }
 
@@ -98,9 +155,9 @@ fn run_tui<B: Backend>(
         if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 match key.code {
-                    KeyCode::Char('q') => {
-                        return Ok(());
-                    }
+                    KeyCode::Down => tui.next_memory(),
+                    KeyCode::Up => tui.prev_memory(),
+                    KeyCode::Char('q') => {return Ok(());}
                     _ => {}
                 }
 
@@ -145,6 +202,61 @@ fn register_view(registers: Vec<u8>) -> Table<'static> {
     return t;
 }
 
+fn memory_view(memory: Vec<u8>) -> Table<'static> {
+    let selected_style = Style::default().add_modifier(Modifier::REVERSED);
+    let normal_style = Style::default().bg(Color::Blue);
+    let header_cells = ["Address", "0x00", "0x01", "0x02", "0x03", "0x04", "0x05", "0x06",
+                        "0x07", "0x08", "0x09", "0x0A", "0x0B", "0x0C", "0x0D", "0x0E", "0x0F"]
+        .iter()
+        .map(|h| Cell::from(*h).style(Style::default().fg(Color::Red)));
+    let header = Row::new(header_cells)
+        .style(normal_style)
+        .height(1)
+        .bottom_margin(1);
+
+    // Take 16 at a time
+    let mut rows = Vec::new();
+    let mut cells = Vec::new();
+    for (idx, x) in memory.into_iter().enumerate() {
+        cells.push(Cell::from(format!("{:X}", x))); // Value in address
+        if idx % 16 == 0 {
+            let height = x.to_string().chars().filter(|c| *c == '\n').count() + 1;
+            rows.push(Row::new(cells).height(height as u16).bottom_margin(1));
+            cells = Vec::new();
+            cells.push(Cell::from(format!("{:X}", idx))); // Address
+        }
+    }
+
+    let t = Table::new(rows)
+        .header(header)
+        .block(Block::default().borders(Borders::ALL).title("Table"))
+        .highlight_style(selected_style)
+        .highlight_symbol(">> ")
+        .widths(&[
+            Constraint::Percentage(7),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+            Constraint::Percentage(5),
+                    ]);
+
+    return t;
+
+
+}
+
 fn ui<B: Backend>(f: &mut Frame<B>, tui: &mut Tui) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -159,6 +271,10 @@ fn ui<B: Backend>(f: &mut Frame<B>, tui: &mut Tui) {
     // Registers
     let register_view = register_view(tui.cpu.get_registers().to_vec());
     f.render_stateful_widget(register_view, data_chunks[0], &mut tui.register_table_state);
+
+    // Memory view
+    let memory_view = memory_view(tui.cpu.get_memory());
+    f.render_stateful_widget(memory_view, data_chunks[1], &mut tui.memory_table_state);
 
 
     // Map cpu vbuf to canvas

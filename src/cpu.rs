@@ -469,6 +469,10 @@ impl CPU {
         print!("");
     }
 
+    pub fn get_memory(&self) -> Vec<u8> {
+        return self.ram.clone().to_vec();
+    }
+
     pub fn print_memory(&mut self) {
         for (idx, byte) in self.ram.iter().enumerate() {
             if idx % 16 == 0 {
