@@ -1,6 +1,8 @@
 use rand::Rng;
 use rand::rngs::ThreadRng;
 
+use std::collections::VecDeque;
+
 //const STACK_SIZE: usize = 64;
 const DISPLAY_WIDTH: usize = 64;
 const DISPLAY_HEIGHT: usize = 32;
@@ -8,20 +10,22 @@ const PROGRAM_START: usize = 0x200;
 const CHAR_ON: char = '█';
 const CHAR_OFF: char = ' ';
 const CLOCK_SPEED: u64 = 500; // Hz
+const HISTORY_LIMIT: usize = 500; // Hz
 
 
 pub struct CPU {
     ram: [u8; 4096], // Main memory
-    pc: u16, // Program counter
-    ir: u16, // Index register
-    sp: u8, // Stack pointer
-    dt: u8, // Delay timer
-    st: u8, // Sound timer
+    pub pc: u16, // Program counter
+    pub ir: u16, // Index register
+    pub sp: u8, // Stack pointer
+    pub dt: u8, // Delay timer
+    pub st: u8, // Sound timer
     stack: Vec<u16>, // Stack
     regs: [u8; 16], // General purpose registers
     pub vbuf: [u8; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8], // Video buffer,
     rng: ThreadRng,
     debug: bool,
+    exec_history: VecDeque<u16>,
 }
 
 const _FONT_SET: [[u8; 5]; 16] = [
@@ -57,6 +61,7 @@ impl Default for CPU {
             vbuf: [0xAA; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8],
             rng : rand::thread_rng(),
             debug: false,
+            exec_history: VecDeque::new(),
         }
         // Preload sprites to 0x0000 - 0x01ff
     }
@@ -76,6 +81,7 @@ impl CPU {
             vbuf: [0xAA; DISPLAY_WIDTH * DISPLAY_HEIGHT / 8],
             rng : rand::thread_rng(),
             debug,
+            exec_history: VecDeque::new(),
         }
         // Preload sprites to 0x0000 - 0x01ff
     }
@@ -125,7 +131,6 @@ impl CPU {
         return;
     }
 
-
     // Skip if registers are equal
     fn sre(&mut self, reg1:u8, reg2:u8) {
         if self.regs[reg1 as usize] == self.regs[reg2 as usize] {
@@ -133,8 +138,6 @@ impl CPU {
         }
         return;
     }
-
-
 
     fn setreg(&mut self, reg: u8, value: u8) {
         self.regs[reg as usize] = value;
@@ -340,8 +343,23 @@ impl CPU {
         return high | low;
     }
 
+    pub fn fetch_no_increment(&self) -> u16 {
+        if self.pc as usize + 2 >= self.ram.len() {
+            panic!("PC out of bounds");
+        }
+        let high: u16  = (self.ram[self.pc as usize] as u16) << 8;
+        let low: u16 = self.ram[self.pc as usize + 1] as u16;
+        return high | low;
+    }
+
     // TODO: Consider splitting u16 to 2 u8s before function call
     fn exec(&mut self, ins: u16) {
+        // Push command to history
+        if self.exec_history.len() >= HISTORY_LIMIT {
+            self.exec_history.pop_front();
+        }
+        self.exec_history.push_back(ins);
+
         // Decode command and execute matched
         match ins & 0xf000 {
             0x0000 => match ins & 0x00ff {
@@ -396,11 +414,11 @@ impl CPU {
     }
 
     pub fn next_cycle(&mut self) -> i32 {
-        let instruction = self.fetch();
-        self.exec(instruction);
         if self.pc >= 4095 {
             return -1;
         }
+        let instruction = self.fetch();
+        self.exec(instruction);
         return 0;
     }
 
@@ -481,6 +499,10 @@ impl CPU {
             print!("{:02x} ", byte);
         }
         print!("\n");
+    }
+
+    pub fn get_history(&self) -> VecDeque<u16> {
+        return self.exec_history.clone();
     }
 
     pub fn load_bin(&mut self, binary: Vec<u8>, override_ram: bool) {

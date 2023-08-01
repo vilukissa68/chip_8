@@ -1,5 +1,6 @@
 mod cpu;
 mod tui;
+mod disassembler;
 
 use cpu::CPU;
 use std::fmt::format;
